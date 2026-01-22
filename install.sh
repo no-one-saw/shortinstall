@@ -28,9 +28,14 @@ SWAP_SIZE="16G"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing command: $1"; exit 1; }; }
 
+cleanup() {
+  umount -R /mnt 2>/dev/null || true
+}
+trap cleanup EXIT
+
 for c in lsblk awk sort sgdisk mkfs.fat mkfs.btrfs mount umount \
          pacstrap genfstab arch-chroot timedatectl partprobe blkid \
-         grep sed cat chmod btrfs chattr swapoff df; do
+         grep sed cat chmod btrfs chattr swapoff df pacman; do
   need "$c"
 done
 
@@ -135,6 +140,19 @@ mount "$P1" /mnt/boot
 echo "Updating keyring"
 pacman -Sy --noconfirm archlinux-keyring >/dev/null || true
 
+if [[ "$ENABLE_MULTILIB" == "1" ]]; then
+  if ! grep -q '^\[multilib\]' /etc/pacman.conf; then
+    cat >> /etc/pacman.conf <<H2
+
+[multilib]
+Include = /etc/pacman.d/mirrorlist
+H2
+  else
+    sed -i '/\[multilib\]/{n;s/^#//;}' /etc/pacman.conf || true
+  fi
+  pacman -Sy --noconfirm >/dev/null || true
+fi
+
 echo "Installing base system"
 PKGS=(
   base linux linux-firmware
@@ -158,6 +176,16 @@ if [[ "$INSTALL_NVIDIA" == "1" ]]; then
     PKGS+=(lib32-nvidia-utils)
   fi
 fi
+
+FILTERED_PKGS=()
+for p in "${PKGS[@]}"; do
+  if pacman -Si "$p" >/dev/null 2>&1; then
+    FILTERED_PKGS+=("$p")
+  else
+    echo "WARNING: Package not found in current repos, skipping: $p"
+  fi
+done
+PKGS=("${FILTERED_PKGS[@]}")
 
 AVAIL_BYTES="$(df -B1 --output=avail /mnt | tail -n 1 | tr -d ' ' || true)"
 MIN_AVAIL_BYTES=$((12 * 1024 * 1024 * 1024))
@@ -215,9 +243,13 @@ echo "root:$PASSWORD" | chpasswd
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
 systemctl enable NetworkManager
-systemctl enable bluetooth
-systemctl disable getty@tty2.service
-systemctl enable ly@tty2.service
+if systemctl list-unit-files | grep -q '^bluetooth\.service'; then
+  systemctl enable bluetooth
+fi
+if systemctl list-unit-files | grep -q '^ly@\.service'; then
+  systemctl disable getty@tty2.service || true
+  systemctl enable ly@tty2.service
+fi
 
 echo "Creating prime-run"
 cat > /usr/bin/prime-run <<'PR'
@@ -230,6 +262,7 @@ PR
 chmod +x /usr/bin/prime-run
 
 echo "Creating swapfile (16G)"
+mkdir -p /.swap
 chattr +C /.swap
 btrfs filesystem mkswapfile --size $SWAP_SIZE /.swap/swapfile
 chmod 600 /.swap/swapfile
@@ -239,6 +272,10 @@ echo "/.swap/swapfile none swap defaults 0 0" >> /etc/fstab
 bootctl install
 
 ROOT_UUID=\$(blkid -s UUID -o value "$P2")
+BOOT_OPTS="root=UUID=\$ROOT_UUID rootflags=subvol=@ rw"
+if pacman -Q nvidia-utils >/dev/null 2>&1; then
+  BOOT_OPTS+=" nvidia-drm.modeset=1"
+fi
 
 cat > /boot/loader/loader.conf <<L
 default arch
@@ -250,7 +287,7 @@ cat > /boot/loader/entries/arch.conf <<L
 title   Arch Linux
 linux   /vmlinuz-linux
 initrd  /initramfs-linux.img
-options root=UUID=\$ROOT_UUID rootflags=subvol=@ rw nvidia-drm.modeset=1
+options \$BOOT_OPTS
 L
 
 mkdir -p "/home/$USERNAME/.config/hypr"
