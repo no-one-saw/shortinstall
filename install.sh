@@ -251,10 +251,9 @@ systemctl enable NetworkManager
 if systemctl list-unit-files | grep -q '^bluetooth\.service'; then
   systemctl enable bluetooth
 fi
-if pacman -Q ly >/dev/null 2>&1 && systemctl list-unit-files | grep -q '^ly\.service'; then
+if pacman -Q ly >/dev/null 2>&1 && systemctl list-unit-files | grep -q '^ly@\.service'; then
   systemctl disable getty@tty2.service || true
-  systemctl enable ly.service
-  systemctl set-default graphical.target || true
+  systemctl enable ly@tty2.service
   if [[ -f /etc/ly/config.ini ]]; then
     if grep -qE '^tty\s*=' /etc/ly/config.ini; then
       sed -i 's/^tty\s*=.*/tty = 2/' /etc/ly/config.ini || true
@@ -269,7 +268,7 @@ tty = 2
 LYC
   fi
 else
-  echo "WARNING: ly is not installed or ly.service not found; display manager will not be enabled."
+  echo "WARNING: ly is not installed or ly@.service not found; display manager will not be enabled."
 fi
 
 echo "Creating prime-run"
