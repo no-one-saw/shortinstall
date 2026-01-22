@@ -104,6 +104,11 @@ fi
 umount -R /mnt 2>/dev/null || true
 swapoff -a 2>/dev/null || true
 
+while read -r mp; do
+  [[ -n "$mp" ]] || continue
+  umount "$mp" 2>/dev/null || true
+done < <(lsblk -nrpo MOUNTPOINT "$P1" "$P2" 2>/dev/null | awk 'NF')
+
 echo "Creating partition table"
 sgdisk --zap-all "$DISK"
 sgdisk -o "$DISK"
