@@ -35,7 +35,7 @@ trap cleanup EXIT
 
 for c in lsblk awk sort sgdisk mkfs.fat mkfs.btrfs mount umount \
          pacstrap genfstab arch-chroot timedatectl partprobe blkid \
-         grep sed cat chmod btrfs chattr swapoff df pacman; do
+         grep sed cat chmod btrfs chattr swapoff df pacman mountpoint; do
   need "$c"
 done
 
@@ -135,7 +135,7 @@ mount -o noatime,compress=$BTRFS_COMPRESS,subvol=@log "$P2" /mnt/var/log
 mount -o noatime,compress=$BTRFS_COMPRESS,subvol=@pkg "$P2" /mnt/var/cache/pacman/pkg
 mount -o noatime,compress=$BTRFS_COMPRESS,subvol=@snapshots "$P2" /mnt/.snapshots
 mount -o noatime,subvol=@swap "$P2" /mnt/.swap
-mount "$P1" /mnt/boot
+mount -o umask=0077 "$P1" /mnt/boot
 
 echo "Updating keyring"
 pacman -Sy --noconfirm archlinux-keyring >/dev/null || true
@@ -268,6 +268,10 @@ btrfs filesystem mkswapfile --size $SWAP_SIZE /.swap/swapfile
 chmod 600 /.swap/swapfile
 swapon /.swap/swapfile
 echo "/.swap/swapfile none swap defaults 0 0" >> /etc/fstab
+
+if [[ -d /sys/firmware/efi/efivars ]] && ! mountpoint -q /sys/firmware/efi/efivars; then
+  mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true
+fi
 
 bootctl install
 
