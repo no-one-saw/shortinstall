@@ -30,7 +30,7 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing command: $1"; exit 1
 
 for c in lsblk awk sort sgdisk mkfs.fat mkfs.btrfs mount umount \
          pacstrap genfstab arch-chroot timedatectl partprobe blkid \
-         grep sed cat chmod; do
+         grep sed cat chmod btrfs chattr swapoff df; do
   need "$c"
 done
 
@@ -40,14 +40,18 @@ if [[ ! -d /sys/firmware/efi/efivars ]]; then
 fi
 
 echo
-read -rp "Enter username: " USERNAME
+read -rp "Enter username: " USERNAME < /dev/tty
 while [[ -z "$USERNAME" ]]; do
-  read -rp "Username cannot be empty: " USERNAME
+  read -rp "Username cannot be empty: " USERNAME < /dev/tty
 done
 
 while true; do
-  read -rsp "Enter password: " PASSWORD; echo
-  read -rsp "Confirm password: " PASSWORD2; echo
+  read -rsp "Enter password: " PASSWORD < /dev/tty; echo
+  read -rsp "Confirm password: " PASSWORD2 < /dev/tty; echo
+  if [[ -z "$PASSWORD" ]]; then
+    echo "Password cannot be empty. Try again."
+    continue
+  fi
   [[ "$PASSWORD" == "$PASSWORD2" ]] && break
   echo "Passwords do not match. Try again."
 done
@@ -68,6 +72,19 @@ if [[ -z "$DISK" ]]; then
 fi
 
 echo "Selected disk: $DISK"
+DISK_BYTES="$(lsblk -bdno SIZE "$DISK" | head -n1 || true)"
+if [[ -z "$DISK_BYTES" ]]; then
+  echo "ERROR: Could not determine disk size for $DISK"
+  exit 1
+fi
+
+MIN_DISK_BYTES=$((30 * 1024 * 1024 * 1024))
+if (( DISK_BYTES < MIN_DISK_BYTES )); then
+  echo "ERROR: Disk is too small for this install (need at least 30 GiB)."
+  echo "Detected size: $((DISK_BYTES / 1024 / 1024 / 1024)) GiB"
+  exit 1
+fi
+
 echo "All data on this disk will be destroyed in 3 seconds."
 sleep 3
 
@@ -142,6 +159,18 @@ if [[ "$INSTALL_NVIDIA" == "1" ]]; then
   fi
 fi
 
+AVAIL_BYTES="$(df -B1 --output=avail /mnt | tail -n 1 | tr -d ' ' || true)"
+MIN_AVAIL_BYTES=$((12 * 1024 * 1024 * 1024))
+if [[ -z "$AVAIL_BYTES" ]]; then
+  echo "ERROR: Could not determine free space on /mnt"
+  exit 1
+fi
+if (( AVAIL_BYTES < MIN_AVAIL_BYTES )); then
+  echo "ERROR: Not enough free disk space on /mnt for package installation."
+  echo "Free: $((AVAIL_BYTES / 1024 / 1024)) MiB (need at least $((MIN_AVAIL_BYTES / 1024 / 1024)) MiB)"
+  exit 1
+fi
+
 pacstrap /mnt "${PKGS[@]}"
 
 echo "Generating fstab"
@@ -153,7 +182,7 @@ arch-chroot /mnt /bin/bash -euo pipefail <<EOF
 ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
 hwclock --systohc
 
-sed -i 's/^#\\($LOCALE\\)/\\1/' /etc/locale.gen || true
+sed -i "s/^#${LOCALE}/${LOCALE}/" /etc/locale.gen || true
 locale-gen
 echo "LANG=$LOCALE" > /etc/locale.conf
 
