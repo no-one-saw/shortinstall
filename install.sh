@@ -4,22 +4,29 @@ set -Eeuo pipefail
 LOG_FILE="/tmp/nen-install.log"
 TOTAL_STEPS=10
 CURRENT_STEP=0
+UI_MODE="welcome"
 
 print_header() {
   cat <<'H'
- _   _            _       ____          _                  
-| \ | | ___ _ __ ( )___  / ___|   _ ___| |_ ___  _ __ ___ 
-|  \| |/ _ \ '_ \|// __| \___ \  | / __| __/ _ \| '__/ __|
-| |\  |  __/ | | | \__ \  ___) | | \__ \ || (_) | |  \__ \
-|_| \_|\___|_| |_| |___/ |____/  |_|___/\__\___/|_|  |___/
-
-                nen's customs
+                                                                         
+                    ▄                                                    
+▄▄  ▄▄ ▄▄▄▄▄ ▄▄  ▄▄ ▀ ▄▄▄▄    ▄▄▄▄ ▄▄ ▄▄  ▄▄▄▄ ▄▄▄▄▄▄ ▄▄▄  ▄▄   ▄▄  ▄▄▄▄ 
+███▄██ ██▄▄  ███▄██  ███▄▄   ██▀▀▀ ██ ██ ███▄▄   ██  ██▀██ ██▀▄▀██ ███▄▄ 
+██ ▀██ ██▄▄▄ ██ ▀██  ▄▄██▀   ▀████ ▀███▀ ▄▄██▀   ██  ▀███▀ ██   ██ ▄▄██▀ 
+                                                                         
 H
 }
 
 render() {
   clear
   print_header
+  if [[ "$UI_MODE" == "welcome" ]]; then
+    printf "\nWelcome.\n"
+    printf "\n"
+    return
+  fi
+  printf "\nIf the progress bar is not moving, it means the installation is still running.\n"
+  printf "Do NOT cut the power or turn off your computer under any circumstances!\n"
   local width=40
   local percent=$(( CURRENT_STEP * 100 / TOTAL_STEPS ))
   local filled=$(( CURRENT_STEP * width / TOTAL_STEPS ))
@@ -41,6 +48,7 @@ progress_next() {
 
 on_error() {
   tput cnorm 2>/dev/null || true
+  UI_MODE="progress"
   render
   printf "\nERROR: Installation failed.\n\n"
   printf "Log: %s\n\n" "$LOG_FILE"
@@ -101,8 +109,6 @@ while [[ -z "$USERNAME" ]]; do
   read -rp "Username cannot be empty: " USERNAME < /dev/tty
 done
 
-render
-
 while true; do
   read -rsp "Enter password: " PASSWORD < /dev/tty; echo
   read -rsp "Confirm password: " PASSWORD2 < /dev/tty; echo
@@ -114,6 +120,7 @@ while true; do
   echo "Passwords do not match. Try again."
 done
 
+UI_MODE="progress"
 render
 log "Starting installer"
 log "Enabling NTP"
