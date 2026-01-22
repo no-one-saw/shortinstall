@@ -5,14 +5,15 @@ LOG_FILE="/tmp/nen-install.log"
 TOTAL_STEPS=10
 CURRENT_STEP=0
 UI_MODE="welcome"
+BOOTLOADER="systemd-boot"
 
 print_header() {
   cat <<'H'
                                                                          
-                    ▄                                                    
-▄▄  ▄▄ ▄▄▄▄▄ ▄▄  ▄▄ ▀ ▄▄▄▄    ▄▄▄▄ ▄▄ ▄▄  ▄▄▄▄ ▄▄▄▄▄▄ ▄▄▄  ▄▄   ▄▄  ▄▄▄▄ 
-███▄██ ██▄▄  ███▄██  ███▄▄   ██▀▀▀ ██ ██ ███▄▄   ██  ██▀██ ██▀▄▀██ ███▄▄ 
-██ ▀██ ██▄▄▄ ██ ▀██  ▄▄██▀   ▀████ ▀███▀ ▄▄██▀   ██  ▀███▀ ██   ██ ▄▄██▀ 
+                        ▄                                                    
+    ▄▄  ▄▄ ▄▄▄▄▄ ▄▄  ▄▄ ▀ ▄▄▄▄    ▄▄▄▄ ▄▄ ▄▄  ▄▄▄▄ ▄▄▄▄▄▄ ▄▄▄  ▄▄   ▄▄  ▄▄▄▄ 
+    ███▄██ ██▄▄  ███▄██  ███▄▄   ██▀▀▀ ██ ██ ███▄▄   ██  ██▀██ ██▀▄▀██ ███▄▄ 
+    ██ ▀██ ██▄▄▄ ██ ▀██  ▄▄██▀   ▀████ ▀███▀ ▄▄██▀   ██  ▀███▀ ██   ██ ▄▄██▀ 
                                                                          
 H
 }
@@ -47,6 +48,8 @@ progress_next() {
 }
 
 on_error() {
+  trap - ERR
+  set +e
   tput cnorm 2>/dev/null || true
   UI_MODE="progress"
   render
@@ -57,22 +60,6 @@ on_error() {
 
 trap on_error ERR
 
-tput civis 2>/dev/null || true
-render
-
-#############################################
-# ARCH LINUX AUTOMATIC INSTALLER
-# Hyprland + Ly + BTRFS + NVIDIA + prime-run
-# Swap: 16G
-#
-# Asks ONLY:
-#   - username
-#   - password (same for user and root)
-#
-# Hostname is always: archlinux
-# UEFI only
-#############################################
-
 HOSTNAME="archlinux"
 TIMEZONE="Europe/Istanbul"
 LOCALE="en_US.UTF-8"
@@ -82,7 +69,6 @@ EFI_SIZE_MIB=1024
 BTRFS_COMPRESS="zstd:3"
 
 ENABLE_MULTILIB=1
-INSTALL_NVIDIA=1
 SWAP_SIZE="16G"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing command: $1"; exit 1; }; }
@@ -93,11 +79,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
+tput civis 2>/dev/null || true
+render
+
 for c in lsblk awk sort sgdisk mkfs.fat mkfs.btrfs mount umount \
          pacstrap genfstab arch-chroot timedatectl partprobe blkid \
-         grep sed cat chmod btrfs chattr swapoff df pacman mountpoint reboot tput clear tail seq; do
+         grep sed cat chmod btrfs swapoff df pacman mountpoint reboot tput clear tail seq mkswap swapon curl; do
   need "$c"
 done
+
+if ! curl -fsSL --max-time 5 https://archlinux.org/ >/dev/null 2>&1; then
+  clear
+  print_header
+  printf "\nInternet connection is required!\n"
+  printf "Exiting in 5 seconds...\n"
+  sleep 5
+  exit 1
+fi
 
 if [[ ! -d /sys/firmware/efi/efivars ]]; then
   echo "ERROR: System is not booted in UEFI mode."
@@ -120,9 +118,24 @@ while true; do
   echo "Passwords do not match. Try again."
 done
 
+while true; do
+  echo
+  echo "Bootloader selection:"
+  echo "  1) systemd-boot"
+  echo "  2) GRUB"
+  read -rp "Select [1-2] (default: 1): " BOOT_CHOICE < /dev/tty
+  BOOT_CHOICE="${BOOT_CHOICE:-1}"
+  case "$BOOT_CHOICE" in
+    1) BOOTLOADER="systemd-boot"; break ;;
+    2) BOOTLOADER="grub"; break ;;
+    *) echo "Invalid selection. Try again." ;;
+  esac
+done
+
 UI_MODE="progress"
 render
 log "Starting installer"
+log "Bootloader selected: $BOOTLOADER"
 log "Enabling NTP"
 timedatectl set-ntp true >>"$LOG_FILE" 2>&1 || true
 progress_next
@@ -160,9 +173,11 @@ progress_next
 if [[ "$DISK" =~ (nvme|mmcblk) ]]; then
   P1="${DISK}p1"
   P2="${DISK}p2"
+  P3="${DISK}p3"
 else
   P1="${DISK}1"
   P2="${DISK}2"
+  P3="${DISK}3"
 fi
 
 umount -R /mnt 2>/dev/null || true
@@ -171,82 +186,51 @@ swapoff -a 2>/dev/null || true
 while read -r mp; do
   [[ -n "$mp" ]] || continue
   umount "$mp" 2>/dev/null || true
-done < <(lsblk -nrpo MOUNTPOINT "$P1" "$P2" 2>/dev/null | awk 'NF')
+done < <(lsblk -nrpo MOUNTPOINT "$P1" "$P2" "$P3" 2>/dev/null | awk 'NF')
 log "Creating partition table"
 sgdisk --zap-all "$DISK" >>"$LOG_FILE" 2>&1
 sgdisk -o "$DISK" >>"$LOG_FILE" 2>&1
 sgdisk -n "1:0:+${EFI_SIZE_MIB}M" -t 1:ef00 -c 1:EFI "$DISK" >>"$LOG_FILE" 2>&1
-sgdisk -n "2:0:0"                 -t 2:8300 -c 2:ARCH "$DISK" >>"$LOG_FILE" 2>&1
+sgdisk -n "2:0:+${SWAP_SIZE}"      -t 2:8200 -c 2:SWAP "$DISK" >>"$LOG_FILE" 2>&1
+sgdisk -n "3:0:0"                  -t 3:8300 -c 3:ARCH "$DISK" >>"$LOG_FILE" 2>&1
 partprobe "$DISK" >>"$LOG_FILE" 2>&1 || true
 sleep 1
 
 log "Formatting partitions"
 mkfs.fat -F32 -n EFI "$P1" >>"$LOG_FILE" 2>&1
-mkfs.btrfs -f -L ARCH "$P2" >>"$LOG_FILE" 2>&1
-progress_next
-
-log "Creating BTRFS subvolumes"
-mount "$P2" /mnt >>"$LOG_FILE" 2>&1
-btrfs subvolume create /mnt/@ >>"$LOG_FILE" 2>&1
-btrfs subvolume create /mnt/@home >>"$LOG_FILE" 2>&1
-btrfs subvolume create /mnt/@log >>"$LOG_FILE" 2>&1
-btrfs subvolume create /mnt/@pkg >>"$LOG_FILE" 2>&1
-btrfs subvolume create /mnt/@snapshots >>"$LOG_FILE" 2>&1
-btrfs subvolume create /mnt/@swap >>"$LOG_FILE" 2>&1
-umount /mnt >>"$LOG_FILE" 2>&1
+mkfs.btrfs -f -L ARCH "$P3" >>"$LOG_FILE" 2>&1
+mkswap -L SWAP "$P2" >>"$LOG_FILE" 2>&1
+swapon "$P2" >>"$LOG_FILE" 2>&1 || true
 progress_next
 
 log "Mounting filesystems"
-mount -o noatime,compress=$BTRFS_COMPRESS,subvol=@ "$P2" /mnt >>"$LOG_FILE" 2>&1
-mkdir -p /mnt/{boot,home,var/log,var/cache/pacman/pkg,.snapshots,.swap}
-
-mount -o noatime,compress=$BTRFS_COMPRESS,subvol=@home "$P2" /mnt/home >>"$LOG_FILE" 2>&1
-mount -o noatime,compress=$BTRFS_COMPRESS,subvol=@log "$P2" /mnt/var/log >>"$LOG_FILE" 2>&1
-mount -o noatime,compress=$BTRFS_COMPRESS,subvol=@pkg "$P2" /mnt/var/cache/pacman/pkg >>"$LOG_FILE" 2>&1
-mount -o noatime,compress=$BTRFS_COMPRESS,subvol=@snapshots "$P2" /mnt/.snapshots >>"$LOG_FILE" 2>&1
-mount -o noatime,subvol=@swap "$P2" /mnt/.swap >>"$LOG_FILE" 2>&1
+mount -o noatime,compress=$BTRFS_COMPRESS "$P3" /mnt >>"$LOG_FILE" 2>&1
+mkdir -p /mnt/boot
 mount -o umask=0077 "$P1" /mnt/boot >>"$LOG_FILE" 2>&1
 progress_next
 
 log "Updating keyring"
 pacman -Sy --noconfirm archlinux-keyring >>"$LOG_FILE" 2>&1 || true
 
-if [[ "$ENABLE_MULTILIB" == "1" ]]; then
-  if ! grep -q '^\[multilib\]' /etc/pacman.conf; then
-    cat >> /etc/pacman.conf <<H2
-
-[multilib]
-Include = /etc/pacman.d/mirrorlist
-H2
-  else
-    sed -i '/\[multilib\]/{n;s/^#//;}' /etc/pacman.conf || true
-  fi
-  pacman -Sy --noconfirm >>"$LOG_FILE" 2>&1 || true
-fi
 progress_next
 
 log "Installing base system"
 PKGS=(
   base linux linux-firmware
-  sudo nano vim
-  networkmanager
-  git curl wget
+  intel-ucode
   btrfs-progs
-  hyprland ly waybar foot
-  pipewire pipewire-pulse wireplumber
-  xdg-desktop-portal xdg-desktop-portal-hyprland
+  sudo
+  base-devel
+  git
+  go
+  networkmanager
   bluez bluez-utils
-  polkit
-  wl-clipboard grim slurp brightnessctl playerctl
-  nautilus
-  mesa vulkan-icd-loader
+  pipewire pipewire-pulse wireplumber
+  nvidia nvidia-utils nvidia-settings
 )
 
-if [[ "$INSTALL_NVIDIA" == "1" ]]; then
-  PKGS+=(nvidia nvidia-utils nvidia-settings)
-  if [[ "$ENABLE_MULTILIB" == "1" ]]; then
-    PKGS+=(lib32-nvidia-utils)
-  fi
+if [[ "$BOOTLOADER" == "grub" ]]; then
+  PKGS+=(grub efibootmgr)
 fi
 
 FILTERED_PKGS=()
@@ -297,107 +281,68 @@ cat > /etc/hosts <<H
 127.0.1.1 $HOSTNAME.localdomain $HOSTNAME
 H
 
-if [[ "$ENABLE_MULTILIB" == "1" ]]; then
-  if ! grep -q '^\\[multilib\\]' /etc/pacman.conf; then
-    cat >> /etc/pacman.conf <<H2
-
-[multilib]
-Include = /etc/pacman.d/mirrorlist
-H2
-  else
-    sed -i '/\\[multilib\\]/{n;s/^#//;}' /etc/pacman.conf || true
-  fi
-  pacman -Sy --noconfirm
-fi
-
 useradd -m -G wheel -s /bin/bash "$USERNAME"
 echo "$USERNAME:$PASSWORD" | chpasswd
 echo "root:$PASSWORD" | chpasswd
 
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-systemctl enable NetworkManager
+if systemctl list-unit-files | grep -q '^NetworkManager\.service'; then
+  systemctl enable NetworkManager
+fi
 if systemctl list-unit-files | grep -q '^bluetooth\.service'; then
   systemctl enable bluetooth
 fi
-if pacman -Q ly >/dev/null 2>&1 && systemctl list-unit-files | grep -q '^ly@\.service'; then
-  systemctl disable getty@tty2.service || true
-  systemctl enable ly@tty2.service
-  if [[ -f /etc/ly/config.ini ]]; then
-    if grep -qE '^tty\s*=' /etc/ly/config.ini; then
-      sed -i 's/^tty\s*=.*/tty = 2/' /etc/ly/config.ini || true
-    else
-      printf '\n%s\n' 'tty = 2' >> /etc/ly/config.ini
-    fi
-  else
-    mkdir -p /etc/ly
-    cat > /etc/ly/config.ini <<LYC
-[main]
-tty = 2
-LYC
-  fi
-else
-  echo "WARNING: ly is not installed or ly@.service not found; display manager will not be enabled."
-fi
 
-echo "Creating prime-run"
-cat > /usr/bin/prime-run <<'PR'
-#!/bin/bash
-export __NV_PRIME_RENDER_OFFLOAD=1
-export __GLX_VENDOR_LIBRARY_NAME=nvidia
-export __VK_LAYER_NV_optimus=NVIDIA_only
-exec "\$@"
-PR
-chmod +x /usr/bin/prime-run
+mkdir -p /etc/sudoers.d
+chmod 750 /etc/sudoers.d
+printf '%s\n' "$USERNAME ALL=(ALL) NOPASSWD: /usr/bin/pacman" > /etc/sudoers.d/99-yay
+chmod 440 /etc/sudoers.d/99-yay
 
-echo "Creating swapfile (16G)"
-mkdir -p /.swap
-chattr +C /.swap
-btrfs filesystem mkswapfile --size $SWAP_SIZE /.swap/swapfile
-chmod 600 /.swap/swapfile
-swapon /.swap/swapfile
-echo "/.swap/swapfile none swap defaults 0 0" >> /etc/fstab
+runuser -u "$USERNAME" -- /bin/bash -euo pipefail <<'YAY'
+cd /tmp
+rm -rf yay
+git clone https://aur.archlinux.org/yay.git
+cd yay
+makepkg -si --noconfirm
+YAY
 
-if [[ -d /sys/firmware/efi/efivars ]] && ! mountpoint -q /sys/firmware/efi/efivars; then
-  mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true
-fi
+rm -f /etc/sudoers.d/99-yay
 
-bootctl install
-
-ROOT_UUID=\$(blkid -s UUID -o value "$P2")
-BOOT_OPTS="root=UUID=\$ROOT_UUID rootflags=subvol=@ rw"
+ROOT_UUID=\$(blkid -s UUID -o value "$P3")
+BOOT_OPTS="root=UUID=\$ROOT_UUID rw"
 if pacman -Q nvidia-utils >/dev/null 2>&1; then
   BOOT_OPTS+=" nvidia-drm.modeset=1"
 fi
 
-cat > /boot/loader/loader.conf <<L
+if [[ "$BOOTLOADER" == "systemd-boot" ]]; then
+  if [[ -d /sys/firmware/efi/efivars ]] && ! mountpoint -q /sys/firmware/efi/efivars; then
+    mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true
+  fi
+  bootctl install
+  cat > /boot/loader/loader.conf <<L
 default arch
 timeout 2
 editor no
 L
-
-cat > /boot/loader/entries/arch.conf <<L
+  cat > /boot/loader/entries/arch.conf <<L
 title   Arch Linux
 linux   /vmlinuz-linux
+initrd  /intel-ucode.img
 initrd  /initramfs-linux.img
 options \$BOOT_OPTS
 L
-
-mkdir -p "/home/$USERNAME/.config/hypr"
-cat > "/home/$USERNAME/.config/hypr/hyprland.conf" <<'HC'
-monitor=,preferred,auto,1
-exec-once=waybar
-
-input {
-  kb_layout=tr
-}
-
-bind=SUPER,Return,exec,foot
-bind=SUPER,Q,killactive
-bind=SUPER,M,exit
-HC
-
-chown -R "$USERNAME:$USERNAME" "/home/$USERNAME/.config"
+else
+  if pacman -Q nvidia-utils >/dev/null 2>&1; then
+    if grep -q '^GRUB_CMDLINE_LINUX=' /etc/default/grub; then
+      sed -i 's/^GRUB_CMDLINE_LINUX="\(.*\)"/GRUB_CMDLINE_LINUX="\1 nvidia-drm.modeset=1"/' /etc/default/grub || true
+    else
+      printf '%s\n' 'GRUB_CMDLINE_LINUX="nvidia-drm.modeset=1"' >> /etc/default/grub
+    fi
+  fi
+  grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+  grub-mkconfig -o /boot/grub/grub.cfg
+fi
 
 EOF
 
