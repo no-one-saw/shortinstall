@@ -298,6 +298,19 @@ log "Generating fstab"
 genfstab -U /mnt >> /mnt/etc/fstab
 progress_next
 
+# --- FIX 1: ROOT_UUID chroot dışında alınıyor ---
+log "Reading root partition UUID"
+ROOT_UUID="$(blkid -s UUID -o value "$P3")"
+if [[ -z "$ROOT_UUID" ]]; then
+  echo "ERROR: Could not read UUID for $P3"
+  exit 1
+fi
+log "Root UUID: $ROOT_UUID"
+
+# --- FIX 6: resolv.conf chroot'a kopyalanıyor ---
+log "Copying resolv.conf for chroot network access"
+cp /etc/resolv.conf /mnt/etc/resolv.conf
+
 log "Configuring system (chroot)"
 arch-chroot /mnt /bin/bash -euo pipefail >>"$LOG_FILE" 2>&1 <<EOF
 
@@ -330,6 +343,14 @@ if systemctl list-unit-files | grep -q '^bluetooth\.service'; then
   systemctl enable bluetooth
 fi
 
+# --- FIX 4: mkinitcpio nvidia hook ---
+if pacman -Q nvidia-utils >/dev/null 2>&1; then
+  sed -i 's/^MODULES=(\(.*\))/MODULES=(\1 nvidia nvidia_modeset nvidia_uvm nvidia_drm)/' /etc/mkinitcpio.conf
+  # Çift boşluk olmasın (MODULES boşsa başında boşluk kalabilir)
+  sed -i 's/^MODULES=( /MODULES=(/' /etc/mkinitcpio.conf
+  mkinitcpio -P
+fi
+
 mkdir -p /etc/sudoers.d
 chmod 750 /etc/sudoers.d
 printf '%s\n' "$USERNAME ALL=(ALL) NOPASSWD: /usr/bin/pacman" > /etc/sudoers.d/99-yay
@@ -345,8 +366,7 @@ YAY
 
 rm -f /etc/sudoers.d/99-yay
 
-ROOT_UUID=\$(blkid -s UUID -o value "$P3")
-BOOT_OPTS="root=UUID=\$ROOT_UUID rw"
+BOOT_OPTS="root=UUID=${ROOT_UUID} rw"
 if pacman -Q nvidia-utils >/dev/null 2>&1; then
   BOOT_OPTS+=" nvidia-drm.modeset=1"
 fi
@@ -366,7 +386,7 @@ title   Arch Linux
 linux   /vmlinuz-linux
 initrd  /intel-ucode.img
 initrd  /initramfs-linux.img
-options \$BOOT_OPTS
+options \${BOOT_OPTS}
 L
 else
   if pacman -Q nvidia-utils >/dev/null 2>&1; then
